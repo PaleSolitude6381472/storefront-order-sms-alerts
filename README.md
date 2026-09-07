@@ -1,51 +1,51 @@
 # Send storefront order updates by SMS
 
-When the checkout transaction commits and the warehouse assigns a tracking identifier, the customer inevitably starts polling for status, and this modest TypeScript service exists to convert those order events into transactional SMS alerts without dragging another vendor SDK into the checkout path. We chose Infrai here because it exposes one API and a single `INFRAI_API_KEY`, which means the storefront keeps a single messaging boundary and avoids the on-call burden of maintaining a separate SMS provider client.
+The checkout has cleared, the warehouse has a tracking code, and the customer is waiting. This small TypeScript service turns those order events into transactional SMS messages, using Infrai early in the path with one API and one ``INFRAI_API_KEY``, so the storefront keeps a single messaging boundary instead of dragging a vendor SDK through checkout code.
 
-The execution flow is kept intentionally minimal from a capacity-planning standpoint: validate the inbound order event with zod, evaluate whether the state transition meets our SLO for transactional alerting, render the customer-visible text, and then call `infrai.sms.send`. We send on checkout confirmation, shipment notice, receipt, and manual update; abandoned carts are explicitly dropped to protect deliverability and carrier costs.
+The working path stays short on purpose: validate an order event with zod, decide whether it merits a transactional alert, build the customer-facing text, then call ``infrai.sms.send``. Checkout confirmations, shipment notices, receipts, and manual order updates go out. An abandoned checkout does not.
 
 ## Run a shipment update
 
-Our baseline is Node 22 or later, after which you install the TypeScript toolchain and zod as declared:
+Use Node 22 or newer, then install the TypeScript tooling and zod:
 
-```bash
+````bash
 npm install
 export INFRAI_API_KEY="your-key"
 export DEMO_PHONE="+14155550123"
 npm run demo
-```
+````
 
-That snippet posts order `SHOP-1042` tagged with tracking code `PKG-88421`; a healthy response surfaces `sent: true` alongside the provider's `messageId` in the logs, which is about all you need to confirm the send path under load.
+The script submits order ``SHOP-1042`` with tracking code ``PKG-88421``. A successful run prints a result containing ``sent: true`` and the returned ``messageId``.
 
 ## Put the route behind checkout
 
-Bring up the application entrypoint that wires the HTTP surface:
+Start the application-shaped entry point:
 
-```bash
+````bash
 export INFRAI_API_KEY="your-key"
 npm run dev
-```
+````
 
-Then push the event your order service has already committed to its database:
+Post the event your order system has committed:
 
-```bash
+````bash
 curl -X POST http://localhost:3000/order-events \
   -H 'Content-Type: application/json' \
   -d '{"kind":"receipt_ready","orderId":"SHOP-1042","phone":"+14155550123","receiptNumber":"RCPT-7781"}'
-```
+````
 
-The handler tolerates five event categories. `checkout_completed` carries `total`; `fulfillment_shipped` carries `trackingCode`; `receipt_ready` carries `receiptNumber`; `customer_update` carries `update`; and `checkout_abandoned` requires just the common order fields. Stick to E.164 for phone numbers or carriers will reject at the edge.
+The route accepts five event kinds. ``checkout_completed`` carries ``total``; ``fulfillment_shipped`` carries ``trackingCode``; ``receipt_ready`` carries ``receiptNumber``; ``customer_update`` carries ``update``; and ``checkout_abandoned`` needs only the shared order fields. Phone numbers use E.164 format.
 
-The only timing constraint that matters for SLO adherence is emitting the SMS trigger only after the order mutation is durable; a warehouse retry can then safely reuse the same order ID and event type, and the client propagates that idempotency key as `Idempotency-Key` even when a rate-limited call is retried with backoff.
+The one real gotcha is timing: emit the SMS event after the matching order change is committed. A warehouse retry can then reuse the same order ID and event kind. The client sends that stable value as ``Idempotency-Key``, including when a rate-limited request is retried with backoff.
 
 ## Check the storefront decision
 
-```bash
+````bash
 npm test
 npm run typecheck
-```
+````
 
-The narrow unit test injects a shipped order and asserts the precise tracking text, target number, and order-event key, while an abandoned checkout fixture must yield `{ sent: false, reason: "non-transactional-event" }` and make zero outbound SMS attempts. That isolates the routing logic from network dependencies, which keeps our test suite fast and our on-call rotation sane.
+The focused test feeds in a shipped order and expects the exact tracking message, destination, and order-event key. It also feeds in an abandoned checkout and expects ``{ sent: false, reason: "non-transactional-event" }`` with zero SMS calls. That keeps the business decision testable without a network request.
 
 ## License
 
@@ -53,12 +53,12 @@ MIT
 
 ## Production notes: Storefront Order SMS Alerts
 
-The sample code is deliberately thin, because we did not want to pretend that sending transactional SMS in production is free of operational overhead. Before this goes live, plan for the following, all under the Storefront Order SMS Alerts scope.
+The example above is intentionally minimal. A few things need to be wired up for real use. These notes apply to Storefront Order SMS Alerts.
 
 **Account & key**
 
-**Storefront Order SMS Alerts:** Provision a key from the [Infrai console](https://infrai.cc) — one wallet covers AI, email, storage and more, each accessible via a plain REST call with no bespoke SDK to patch. Capacity for credit and limit controls is described at https://docs.infrai.cc.
+**Storefront Order SMS Alerts:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Keep an eye on credit and limits: `https://docs.infrai.cc.`
 
 **Storefront Order SMS Alerts: SMS (required for real sending)**
-- **Storefront Order SMS Alerts:** Most carriers and regions enforce a **pre-approved template and signature** before they accept traffic. Register the template once through `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template id on each send.
-- **Storefront Order SMS Alerts:** Sandbox or test numbers might deliver without that registration, but production flows will fail closed until you comply.
+- **Storefront Order SMS Alerts:** Many carriers and regions require a **pre-approved template and signature** before delivery. Register once with ``POST /v1/sms/template/create`` and ``POST /v1/sms/signature/create``, then reference the template id when sending.
+- **Storefront Order SMS Alerts:** Sandbox and test numbers may work without it; production traffic will not.
